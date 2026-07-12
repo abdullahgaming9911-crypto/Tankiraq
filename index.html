@@ -180,6 +180,29 @@
   }
   #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
 
+  .health-track{ width:70px; height:9px; background:#241d16; border:1px solid var(--panel-border); border-radius:3px; overflow:hidden; }
+  .health-fill{ height:100%; width:100%; background:linear-gradient(90deg,#7fae4a,#a8d162); transition:width .25s ease, background .25s ease; }
+  .health-fill.mid{ background:linear-gradient(90deg,#d99a2b,#e8c04a); }
+  .health-fill.low{ background:linear-gradient(90deg,#c0432f,#e8654a); }
+
+  #dmgFlash{
+    position:fixed; inset:0; z-index:45; background:radial-gradient(ellipse at center, rgba(192,67,47,0) 40%, rgba(192,67,47,.45) 100%);
+    opacity:0; pointer-events:none; transition:opacity .15s ease;
+  }
+  #dmgFlash.show{ opacity:1; }
+
+  #gameOverOverlay{
+    position:fixed; inset:0; z-index:150; background:rgba(4,5,3,.78);
+    display:flex; align-items:center; justify-content:center;
+    opacity:0; pointer-events:none; transition:opacity .4s ease;
+  }
+  #gameOverOverlay.show{ opacity:1; pointer-events:auto; }
+  #gameOverPanel{ text-align:center; background:var(--panel-bg); border:1px solid var(--danger); border-radius:12px; padding:28px 34px; }
+  .go-title{ font-size:22px; font-weight:800; color:var(--danger); margin-bottom:10px; }
+  .go-score{ font-size:14px; color:var(--ink); margin-bottom:18px; }
+  .go-score span{ font-family:var(--hud-font); color:var(--accent); font-weight:700; }
+  #restartBtn{ padding:12px 26px; border-radius:8px; border:1px solid var(--accent-dim); background:rgba(217,154,43,.15); color:var(--accent); font-family:var(--ar-font); font-weight:700; font-size:14px; }
+
   /* rotate hint */
   #rotateHint{
     position:fixed; bottom:8px; right:8px; z-index:36; font-size:10px; color:var(--ink-dim);
@@ -206,6 +229,21 @@
   <div id="hudTop">
     <div class="hud-chip"><span class="lbl">النقاط</span><span class="val amber" id="scoreVal">0</span></div>
     <div class="hud-chip"><span class="lbl">القذائف</span><span class="val" id="ammoVal">∞</span></div>
+    <div class="hud-chip" id="healthChip">
+      <span class="lbl">الصحة</span>
+      <div class="health-track"><div class="health-fill" id="healthFill"></div></div>
+    </div>
+    <div class="hud-chip"><span class="lbl">الأعداء</span><span class="val" id="enemyVal">0</span></div>
+  </div>
+
+  <div id="dmgFlash"></div>
+
+  <div id="gameOverOverlay">
+    <div id="gameOverPanel">
+      <div class="go-title">تم تدمير دبابتك</div>
+      <div class="go-score">النقاط النهائية: <span id="finalScore">0</span></div>
+      <button id="restartBtn">إعادة المحاولة</button>
+    </div>
   </div>
 
   <div id="speedo"><span class="n" id="speedVal">0</span> <span class="u">كم/س</span></div>
