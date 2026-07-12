@@ -8,21 +8,31 @@ const CITY_SCALE = 0.01;          // النموذج مُصدَّر بوحدة س
 const TANK_MODEL_URL = './tank.glb';
 const CITY_MODEL_URL = './city_map.glb';
 
-const TURN_RATE = 1.35;           // rad/s
-const MAX_SPEED_FWD = 11.5;       // m/s
-const MAX_SPEED_REV = 5.5;
-const ACCEL = 7.5;
-const DECEL = 9.5;
-const TURRET_SENS = 0.0032;
-const BARREL_SENS = 0.0018;
+const TURN_RATE = 1.55;           // rad/s
+const MAX_SPEED_FWD = 20;         // m/s (~72 كم/س)
+const MAX_SPEED_REV = 9;          // m/s (~32 كم/س)
+const ACCEL = 10;
+const DECEL = 13;
+const TURRET_SENS = 0.0055;
+const BARREL_SENS = 0.0032;
 const BARREL_MIN = -0.06, BARREL_MAX = 0.28;
 const SHELL_SPEED = 95;
 const GRAVITY = -9.8;
-const FIRE_COOLDOWN = 1.35;
+const FIRE_COOLDOWN = 1.1;
 const NEAR_DIST = 45;             // نطاق فحص الاصطدام والأرض
 const HULL_RADIUS = 2.35;
 
+const PLAYER_MAX_HEALTH = 100;
+const ENEMY_MAX_HEALTH = 60;
+const ENEMY_COUNT = 3;
+const ENEMY_FIRE_RANGE = 42;
+const ENEMY_FIRE_COOLDOWN = 2.6;
+const ENEMY_SPEED = 7;
+const ENEMY_SHELL_DAMAGE = [16, 24];
+
 let scoreCount = 0;
+let playerHealth = PLAYER_MAX_HEALTH;
+let gameOver = false;
 
 /* ============================================================
    عناصر DOM
@@ -36,6 +46,12 @@ const toastEl = $('toast');
 const crosshairEl = $('crosshair');
 const scoreVal = $('scoreVal');
 const speedVal = $('speedVal');
+const enemyVal = $('enemyVal');
+const healthFill = $('healthFill');
+const dmgFlash = $('dmgFlash');
+const gameOverOverlay = $('gameOverOverlay');
+const finalScoreEl = $('finalScore');
+const restartBtn = $('restartBtn');
 const fireRing = document.querySelector('#fireBtn .ring circle');
 
 function toast(msg, ms = 1800) {
@@ -44,6 +60,44 @@ function toast(msg, ms = 1800) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => toastEl.classList.remove('show'), ms);
 }
+
+function updateHealthUI() {
+  const pct = Math.max(0, Math.round((playerHealth / PLAYER_MAX_HEALTH) * 100));
+  healthFill.style.width = pct + '%';
+  healthFill.classList.toggle('mid', pct <= 60 && pct > 30);
+  healthFill.classList.toggle('low', pct <= 30);
+}
+
+function damagePlayer(amount) {
+  if (gameOver) return;
+  playerHealth = Math.max(0, playerHealth - amount);
+  updateHealthUI();
+  dmgFlash.classList.add('show');
+  setTimeout(() => dmgFlash.classList.remove('show'), 150);
+  if (playerHealth <= 0) triggerGameOver();
+}
+
+function triggerGameOver() {
+  gameOver = true;
+  finalScoreEl.textContent = scoreCount;
+  gameOverOverlay.classList.add('show');
+}
+
+function restartGame() {
+  playerHealth = PLAYER_MAX_HEALTH;
+  updateHealthUI();
+  scoreCount = 0;
+  scoreVal.textContent = '0';
+  gameOver = false;
+  gameOverOverlay.classList.remove('show');
+  hullYaw = 0; turretYaw = 0; speed = 0; barrelPitch = 0.05;
+  const nearby0 = nearbyEntries(new THREE.Vector3(0, 0, 0));
+  groundY = groundHeightAt(new THREE.Vector3(0, 0, 0), nearby0);
+  tankGroup.position.set(0, groundY, 0);
+  for (const e of enemies) respawnEnemy(e);
+  for (const t of targets) respawnTarget(t);
+}
+restartBtn.addEventListener('pointerdown', restartGame);
 
 /* ============================================================
    Three.js أساسيات
@@ -125,6 +179,20 @@ const collisionEntries = []; // {mesh, box, center, radius, blocking}
 const raycaster = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0, -1, 0);
 
+// أسماء المجموعات التي لا يجب أن تعرقل حركة الدبابة (أعمدة إنارة، إشارات مرور،
+// أسلاك، تفاصيل صغيرة) — هذه غالباً أجسام رفيعة أو تمتد أفقياً فتنتج صندوق
+// تصادم (AABB) كبير وهمي يغلق أجزاء من الشارع تكون فارغة فعلياً.
+const NON_BLOCKING_NAME_RX = /streetlamp|stoplight|^group|wire|cable|sign\b|pole/i;
+
+function findNamedAncestor(obj) {
+  let n = obj;
+  while (n) {
+    if (n.name && NON_BLOCKING_NAME_RX.test(n.name)) return true;
+    n = n.parent;
+  }
+  return false;
+}
+
 function buildCollisionData(root) {
   root.updateMatrixWorld(true);
   const box = new THREE.Box3();
@@ -138,13 +206,12 @@ function buildCollisionData(root) {
       box.getCenter(center);
       const radius = size.length() * 0.5;
       const height = size.y;
-      collisionEntries.push({
-        mesh: obj,
-        box: box.clone(),
-        center,
-        radius,
-        blocking: height > 0.45, // تجاهل تفاصيل الأرض الرقيقة عند فحص الاصطدام الأفقي
-      });
+      const footprint = Math.max(size.x, size.z);
+      const isDecor = findNamedAncestor(obj);
+      // اعتبر العنصر عائقاً فقط إذا كان بحجم مبنى/جدار حقيقي: ليس رفيعاً جداً،
+      // وليس ممتداً بشكل غير طبيعي (ما يدل على أنه صندوق تحيط وهمي يغطي مسافة فارغة)
+      const blocking = !isDecor && height > 0.6 && height < 55 && footprint > 0.9 && footprint < 42;
+      collisionEntries.push({ mesh: obj, box: box.clone(), center, radius, blocking });
     }
   });
 }
@@ -211,19 +278,45 @@ function forwardVector(yaw, out) {
   return out;
 }
 
+function findTankParts(model) {
+  let turret = null, mantle = null;
+  const wheels = [];
+  model.traverse((o) => {
+    if (/^Turret_low/.test(o.name)) turret = o;
+    if (/^Mantle_/.test(o.name)) mantle = o;
+    if (/^(Sprocket|Roadwheel_low|Upper Wheel_low)/.test(o.name)) wheels.push(o);
+  });
+  return { turret, mantle, wheels };
+}
+
 function setupTank(gltf) {
   tankModel = gltf.scene;
   tankModel.traverse((o) => {
     if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
-    if (/^Turret_low/.test(o.name)) turretNode = o;
-    if (/^Mantle_/.test(o.name)) mantleNode = o;
-    if (/^(Sprocket|Roadwheel_low|Upper Wheel_low)/.test(o.name)) wheelNodes.push(o);
   });
+  const parts = findTankParts(tankModel);
+  turretNode = parts.turret; mantleNode = parts.mantle; wheelNodes.push(...parts.wheels);
   const box = new THREE.Box3().setFromObject(tankModel);
-  const bottomOffset = -box.min.y;
-  tankModel.position.y = bottomOffset;
+  tankModel.position.y = -box.min.y;
   tankGroup.add(tankModel);
   tankGroup.position.set(0, 0, 0);
+}
+
+/* ---- استنساخ الدبابة لصنع دبابات معادية بلون مختلف ---- */
+const ENEMY_TINT = new THREE.Color(0xff6a52);
+function createEnemyTankRig() {
+  const clone = tankModel.clone(true);
+  clone.traverse((o) => {
+    if (o.isMesh && o.material) {
+      const mats = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : [o.material.clone()];
+      mats.forEach((m) => { if (m.color) m.color = m.color.clone().multiply(ENEMY_TINT); });
+      o.material = Array.isArray(o.material) ? mats : mats[0];
+    }
+  });
+  const parts = findTankParts(clone);
+  const group = new THREE.Object3D();
+  group.add(clone);
+  return { group, turret: parts.turret, mantle: parts.mantle, wheels: parts.wheels };
 }
 
 /* ============================================================
@@ -314,6 +407,100 @@ function respawnTarget(rec) {
 }
 
 /* ============================================================
+   الدبابات المعادية
+============================================================ */
+const enemies = [];
+
+function updateEnemyCountUI() {
+  const alive = enemies.filter((e) => e.alive).length;
+  enemyVal.textContent = alive;
+}
+
+function spawnEnemyAt(pos) {
+  const rig = createEnemyTankRig();
+  scene.add(rig.group);
+  const nearby = nearbyEntries(pos, 12);
+  const gY = groundHeightAt(pos, nearby);
+  rig.group.position.set(pos.x, gY, pos.z);
+  const e = {
+    group: rig.group, turret: rig.turret, mantle: rig.mantle, wheels: rig.wheels,
+    hullYaw: Math.random() * Math.PI * 2, turretYaw: 0, speed: 0,
+    health: ENEMY_MAX_HEALTH, alive: true, fireCooldown: 1 + Math.random() * 2,
+    waypoint: randomPointNear(pos.x, pos.z, 15, 40),
+  };
+  enemies.push(e);
+  updateEnemyCountUI();
+  return e;
+}
+
+function destroyEnemy(en) {
+  en.alive = false;
+  en.group.visible = false;
+  scoreCount += 50;
+  scoreVal.textContent = scoreCount;
+  toast('تم تدمير دبابة معادية! +50');
+  updateEnemyCountUI();
+  setTimeout(() => respawnEnemy(en), 4500);
+}
+
+function respawnEnemy(en) {
+  const p = randomPointNear(tankGroup.position.x, tankGroup.position.z, 30, 65);
+  const nearby = nearbyEntries(p, 12);
+  const gY = groundHeightAt(p, nearby);
+  en.group.position.set(p.x, gY, p.z);
+  en.health = ENEMY_MAX_HEALTH;
+  en.hullYaw = Math.random() * Math.PI * 2;
+  en.turretYaw = 0;
+  en.speed = 0;
+  en.waypoint = randomPointNear(p.x, p.z, 15, 40);
+  en.group.visible = true;
+  en.alive = true;
+  updateEnemyCountUI();
+}
+
+const _eFwd = new THREE.Vector3();
+function updateEnemy(e, dt, playerPos) {
+  if (!e.alive) return;
+
+  const dx = e.waypoint.x - e.group.position.x;
+  const dz = e.waypoint.z - e.group.position.z;
+  if (Math.hypot(dx, dz) < 4) e.waypoint = randomPointNear(e.group.position.x, e.group.position.z, 15, 40);
+  const desiredYaw = Math.atan2(dx, dz);
+  let diff = desiredYaw - e.hullYaw;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  e.hullYaw += Math.max(-TURN_RATE * 0.7, Math.min(TURN_RATE * 0.7, diff * 2)) * dt;
+  e.speed += (ENEMY_SPEED - e.speed) * Math.min(1, dt * 1.2);
+
+  forwardVector(e.hullYaw, _eFwd);
+  const proposed = e.group.position.clone().addScaledVector(_eFwd, e.speed * dt);
+  const nearby = nearbyEntries(e.group.position, 30);
+  const resolved = resolveCircleCollision(proposed, HULL_RADIUS, nearby);
+  const gY = groundHeightAt(resolved, nearby);
+  e.group.position.set(resolved.x, gY, resolved.z);
+  e.group.rotation.y = e.hullYaw;
+
+  const pdx = playerPos.x - e.group.position.x;
+  const pdz = playerPos.z - e.group.position.z;
+  const distToPlayer = Math.hypot(pdx, pdz);
+  const worldAngleToPlayer = Math.atan2(pdx, pdz);
+  let localTarget = worldAngleToPlayer - e.hullYaw;
+  localTarget = Math.atan2(Math.sin(localTarget), Math.cos(localTarget));
+  const engaging = distToPlayer < ENEMY_FIRE_RANGE;
+  e.turretYaw += ((engaging ? localTarget : 0) - e.turretYaw) * Math.min(1, dt * (engaging ? 3 : 1));
+  if (e.turret) e.turret.rotation.y = e.turretYaw;
+
+  e.group.updateMatrixWorld(true);
+  const wheelSpin = (e.speed * dt) / 0.42;
+  for (const w of e.wheels) w.rotation.x += wheelSpin;
+
+  e.fireCooldown -= dt;
+  if (engaging && Math.abs(localTarget - e.turretYaw) < 0.12 && e.fireCooldown <= 0 && !gameOver) {
+    e.fireCooldown = ENEMY_FIRE_COOLDOWN + Math.random() * 0.9;
+    fireEnemyShell(e);
+  }
+}
+
+/* ============================================================
    المقذوفات والانفجارات
 ============================================================ */
 const shellGeo = new THREE.SphereGeometry(0.16, 10, 10);
@@ -345,11 +532,30 @@ function fireShell() {
   mesh.position.copy(pos);
   mesh.castShadow = true;
   scene.add(mesh);
-  shells.push({ mesh, vel: dir.clone().multiplyScalar(SHELL_SPEED), life: 4.5 });
+  shells.push({ mesh, vel: dir.clone().multiplyScalar(SHELL_SPEED), life: 4.5, owner: 'player' });
   muzzleLight.position.copy(pos);
   muzzleLightT = 0.09;
   playFireSound();
   tankGroup.userData.recoil = 0.18;
+}
+
+const enemyShellMat = new THREE.MeshStandardMaterial({ color: 0x5599ff, emissive: 0x2a5fff, emissiveIntensity: 1.6, roughness: 0.3 });
+
+function fireEnemyShell(e) {
+  const src = e.turret || e.group;
+  const pos = new THREE.Vector3();
+  src.getWorldPosition(pos);
+  const totalYaw = e.hullYaw + e.turretYaw;
+  const spread = (Math.random() - 0.5) * 0.06;
+  const fx = Math.sin(totalYaw + spread);
+  const fz = Math.cos(totalYaw + spread);
+  pos.x += fx * 5.4; pos.y += 1.7; pos.z += fz * 5.4;
+  const mesh = new THREE.Mesh(shellGeo, enemyShellMat);
+  mesh.position.copy(pos);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  shells.push({ mesh, vel: new THREE.Vector3(fx, 0.04, fz).multiplyScalar(SHELL_SPEED * 0.82), life: 4.5, owner: 'enemy' });
+  playFireSound();
 }
 
 function spawnHitEffect(pos) {
@@ -380,7 +586,7 @@ function updateShells(dt) {
     s.life -= dt;
     let dead = s.life <= 0 || s.mesh.position.y < -5;
 
-    if (!dead) {
+    if (!dead && s.owner === 'player') {
       for (const t of targets) {
         if (!t.alive) continue;
         const dy = s.mesh.position.y - (t.mesh.position.y + 1.1);
@@ -397,6 +603,34 @@ function updateShells(dt) {
           dead = true;
           break;
         }
+      }
+    }
+    if (!dead && s.owner === 'player') {
+      for (const en of enemies) {
+        if (!en.alive) continue;
+        const ep = en.group.position;
+        const dy = s.mesh.position.y - (ep.y + 1.3);
+        const dx = s.mesh.position.x - ep.x;
+        const dz = s.mesh.position.z - ep.z;
+        if (dx * dx + dy * dy + dz * dz < 2.5 * 2.5) {
+          en.health -= 22;
+          hitEffects.push(spawnHitEffect(s.mesh.position.clone()));
+          dead = true;
+          if (en.health <= 0) destroyEnemy(en);
+          break;
+        }
+      }
+    }
+    if (!dead && s.owner === 'enemy' && !gameOver) {
+      const pp = tankGroup.position;
+      const dy = s.mesh.position.y - (pp.y + 1.3);
+      const dx = s.mesh.position.x - pp.x;
+      const dz = s.mesh.position.z - pp.z;
+      if (dx * dx + dy * dy + dz * dz < 2.6 * 2.6) {
+        hitEffects.push(spawnHitEffect(s.mesh.position.clone()));
+        const dmg = ENEMY_SHELL_DAMAGE[0] + Math.random() * (ENEMY_SHELL_DAMAGE[1] - ENEMY_SHELL_DAMAGE[0]);
+        damagePlayer(dmg);
+        dead = true;
       }
     }
     if (!dead) {
@@ -518,6 +752,13 @@ function setupJoystick() {
     move(e);
     ensureAudio(); startEngine();
   }
+  function shapeAxis(v) {
+    const dz = 0.06; // منطقة ميتة صغيرة فقط لمنع الانجراف العشوائي
+    const av = Math.abs(v);
+    if (av < dz) return 0;
+    const t = (av - dz) / (1 - dz);
+    return Math.sign(v) * t; // استجابة خطية سلسة بدون قفزات
+  }
   function move(e) {
     if (!active || e.pointerId !== pointerId) return;
     let dx = e.clientX - cx, dy = e.clientY - cy;
@@ -525,8 +766,8 @@ function setupJoystick() {
     if (d > radius) { dx = (dx / d) * radius; dy = (dy / d) * radius; }
     stick.style.transform = `translate(${dx}px, ${dy}px)`;
     const nx = dx / radius, ny = dy / radius;
-    input.steer = Math.abs(nx) > 0.08 ? nx : 0;
-    input.throttle = Math.abs(ny) > 0.08 ? -ny : 0;
+    input.steer = shapeAxis(nx);
+    input.throttle = shapeAxis(-ny);
   }
   function end(e) {
     if (e.pointerId !== pointerId) return;
@@ -565,10 +806,10 @@ function setupActionButtons() {
     zoomBtn.classList.toggle('active', input.zoomLevel > 0);
   });
 
-  // سحب على الشاشة لتوجيه البرج والمدفع أثناء التصويب
+  // سحب على الشاشة لتوجيه البرج والمدفع — يعمل دائماً (وضع التصويب فقط يقرّب الكاميرا ويظهر الكروسهير)
   let dragging = false, lastX = 0, lastY = 0, dragId = null;
   canvas.addEventListener('pointerdown', (e) => {
-    if (!input.aiming || editMode) return;
+    if (editMode) return;
     dragging = true; dragId = e.pointerId; lastX = e.clientX; lastY = e.clientY;
   });
   window.addEventListener('pointermove', (e) => {
@@ -772,7 +1013,10 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  updateTank(dt);
+  if (!gameOver) {
+    updateTank(dt);
+    for (const e of enemies) updateEnemy(e, dt, tankGroup.position);
+  }
   updateShells(dt);
   updateCamera(dt);
 
@@ -832,6 +1076,13 @@ async function boot() {
     tankGroup.updateMatrixWorld(true);
 
     trySpawnTargetsAround(tankGroup.position, 8);
+
+    loadSub.textContent = 'نشر الدبابات المعادية…';
+    for (let i = 0; i < ENEMY_COUNT; i++) {
+      const p = randomPointNear(tankGroup.position.x, tankGroup.position.z, 30, 65);
+      spawnEnemyAt(p);
+    }
+    updateHealthUI();
 
     captureDefaults();
 
