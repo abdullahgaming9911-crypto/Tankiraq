@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>معركة الدبابة | Cold War Tank Battle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --panel-bg: rgba(18,22,17,.86);
+    --panel-border: #4b5a34;
+    --accent: #d99a2b;
+    --accent-dim: #8a6a22;
+    --ok: #7fae4a;
+    --danger: #c0432f;
+    --ink: #e7e6d9;
+    --ink-dim: #9aa08c;
+    --hud-font: 'Rajdhani', sans-serif;
+    --ar-font: 'Tajawal', sans-serif;
+  }
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{
+    margin:0; padding:0; width:100%; height:100%; overflow:hidden;
+    background:#0a0c08; color:var(--ink); font-family:var(--ar-font);
+    overscroll-behavior:none; touch-action:none;
+  }
+  #app{ position:fixed; inset:0; }
+  canvas#gl{ position:absolute; inset:0; display:block; width:100%; height:100%; touch-action:none; }
+
+  /* ===== Loading screen ===== */
+  #loading{
+    position:fixed; inset:0; z-index:200; background:
+      radial-gradient(ellipse at 50% 30%, #232c1a 0%, #0a0c08 70%);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    transition:opacity .6s ease, visibility .6s ease;
+  }
+  #loading.hidden{ opacity:0; visibility:hidden; pointer-events:none; }
+  .load-title{ font-family:var(--ar-font); font-weight:800; font-size:clamp(20px,5vw,30px); color:var(--accent); letter-spacing:1px; }
+  .load-sub{ font-size:13px; color:var(--ink-dim); }
+  .load-bar-track{ width:min(78vw,360px); height:10px; background:#1c2116; border:1px solid var(--panel-border); border-radius:2px; overflow:hidden; position:relative; }
+  .load-bar-fill{ height:100%; width:0%; background:linear-gradient(90deg,var(--accent-dim),var(--accent)); transition:width .2s ease; }
+  .load-pct{ font-family:var(--hud-font); font-weight:700; font-size:15px; color:var(--ink); direction:ltr; }
+  .tank-blip{ width:46px; height:46px; border:2px solid var(--accent); border-radius:50%; display:flex; align-items:center; justify-content:center; animation:pulse 1.4s ease-in-out infinite; }
+  .tank-blip svg{ width:24px; height:24px; fill:var(--accent); }
+  @keyframes pulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(217,154,43,.35);} 50%{ box-shadow:0 0 0 14px rgba(217,154,43,0);} }
+
+  /* ===== HUD top ===== */
+  #hudTop{
+    position:fixed; top:12px; left:12px; z-index:40; display:flex; flex-direction:column; gap:6px;
+    font-family:var(--hud-font); pointer-events:none;
+  }
+  .hud-chip{
+    background:var(--panel-bg); border:1px solid var(--panel-border); border-radius:4px;
+    padding:6px 12px; display:flex; align-items:center; gap:8px; backdrop-filter:blur(3px);
+    clip-path:polygon(0 0,100% 0,100% 100%,10px 100%,0 calc(100% - 10px));
+  }
+  .hud-chip .lbl{ font-family:var(--ar-font); font-size:11px; color:var(--ink-dim); }
+  .hud-chip .val{ font-size:18px; font-weight:700; color:var(--ink); direction:ltr; min-width:34px; }
+  .hud-chip .val.amber{ color:var(--accent); }
+
+  /* ===== Crosshair ===== */
+  #crosshair{
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:35;
+    width:150px; height:150px; pointer-events:none; opacity:0; transition:opacity .25s ease;
+  }
+  #crosshair.active{ opacity:1; }
+  #crosshair svg{ width:100%; height:100%; }
+  #crosshair .stroke{ stroke:var(--accent); fill:none; stroke-width:1.4; }
+  #crosshair .dot{ fill:var(--danger); }
+
+  /* ===== Speed readout bottom center ===== */
+  #speedo{
+    position:fixed; bottom:14px; left:50%; transform:translateX(-50%); z-index:35;
+    font-family:var(--hud-font); text-align:center; pointer-events:none;
+    background:var(--panel-bg); border:1px solid var(--panel-border); border-radius:4px; padding:4px 16px;
+  }
+  #speedo .n{ font-size:22px; font-weight:700; color:var(--ink); direction:ltr; }
+  #speedo .u{ font-size:10px; color:var(--ink-dim); }
+
+  /* ===== Draggable control base ===== */
+  .ctrl{
+    position:fixed; z-index:50; touch-action:none; user-select:none;
+    transform-origin:center center;
+  }
+  .ctrl.editing{ outline:2px dashed var(--accent); outline-offset:4px; border-radius:50%; }
+
+  /* Joystick */
+  #joyBase{
+    left:26px; bottom:26px; width:132px; height:132px; border-radius:50%;
+    background:radial-gradient(circle at 50% 42%, rgba(90,107,63,.28), rgba(15,18,12,.55));
+    border:1px solid var(--panel-border); backdrop-filter:blur(2px);
+  }
+  #joyStick{
+    position:absolute; left:50%; top:50%; width:56px; height:56px; margin:-28px 0 0 -28px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #d9c98a, var(--accent-dim));
+    border:1px solid #3a3120; box-shadow:0 3px 8px rgba(0,0,0,.5);
+  }
+
+  /* Round action buttons */
+  .btn-round{
+    border-radius:50%; display:flex; align-items:center; justify-content:center; flex-direction:column;
+    background:linear-gradient(160deg, rgba(40,47,30,.92), rgba(16,19,13,.92));
+    border:1px solid var(--panel-border); box-shadow:0 4px 10px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05);
+    color:var(--ink); gap:2px;
+  }
+  .btn-round svg{ width:46%; height:46%; fill:none; stroke:var(--ink); stroke-width:1.6; }
+  .btn-round span{ font-size:9px; font-family:var(--ar-font); color:var(--ink-dim); letter-spacing:.5px; }
+  .btn-round.active{ border-color:var(--accent); box-shadow:0 0 0 2px rgba(217,154,43,.4), 0 4px 14px rgba(217,154,43,.25); }
+  .btn-round.active svg{ stroke:var(--accent); }
+  .btn-round:active{ transform:scale(.93); }
+
+  #fireBtn{ right:30px; bottom:30px; width:82px; height:82px; }
+  #fireBtn svg{ stroke:var(--danger); }
+  #fireBtn .ring{ position:absolute; inset:-1px; border-radius:50%; }
+  #fireBtn .ring svg{ width:100%; height:100%; }
+  #fireBtn .ring circle{ fill:none; stroke:var(--accent); stroke-width:3; stroke-dasharray:226; stroke-dashoffset:226; transform:rotate(-90deg); transform-origin:50% 50%; transition:stroke-dashoffset .05s linear; }
+
+  #aimBtn{ right:128px; bottom:100px; width:58px; height:58px; }
+  #zoomBtn{ right:34px; bottom:128px; width:58px; height:58px; }
+
+  #gearBtn{
+    top:12px; left:196px; width:44px; height:44px; border-radius:50%;
+    background:var(--panel-bg); border:1px solid var(--panel-border);
+    display:flex; align-items:center; justify-content:center; z-index:60;
+    box-shadow:0 2px 10px rgba(0,0,0,.5);
+  }
+  #gearBtn svg{ width:56%; height:56%; fill:none; stroke:var(--ink); stroke-width:1.6; }
+  #gearBtn:active{ transform:scale(.92); }
+
+  #swapBtn{
+    top:12px; left:250px; width:44px; height:44px; border-radius:50%;
+    background:var(--panel-bg); border:1px solid var(--panel-border);
+    display:flex; align-items:center; justify-content:center; z-index:60;
+    box-shadow:0 2px 10px rgba(0,0,0,.5);
+  }
+  #swapBtn svg{ width:56%; height:56%; fill:none; stroke:var(--accent); stroke-width:1.7; }
+  #swapBtn:active{ transform:scale(.92); }
+  #modeLabel{
+    position:fixed; top:20px; left:304px; z-index:40; font-size:11px; color:var(--ink-dim);
+    background:var(--panel-bg); border:1px solid var(--panel-border); border-radius:5px; padding:3px 9px;
+    pointer-events:none; white-space:nowrap;
+  }
+
+  /* ===== Settings panel ===== */
+  #settingsOverlay{
+    position:fixed; inset:0; z-index:80; background:rgba(4,5,3,.55);
+    display:flex; align-items:flex-end; justify-content:center;
+    opacity:0; pointer-events:none; transition:opacity .25s ease;
+  }
+  #settingsOverlay.open{ opacity:1; pointer-events:auto; }
+  #settingsPanel{
+    width:100%; max-width:480px; max-height:80vh; overflow-y:auto;
+    background:var(--panel-bg); border:1px solid var(--panel-border); border-bottom:none;
+    border-radius:14px 14px 0 0; padding:16px 18px 22px; backdrop-filter:blur(6px);
+    transform:translateY(12px); transition:transform .25s ease;
+  }
+  #settingsOverlay.open #settingsPanel{ transform:translateY(0); }
+  .settings-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .settings-head h2{ margin:0; font-size:17px; font-weight:800; color:var(--accent); }
+  #closeSettings{ background:none; border:1px solid var(--panel-border); color:var(--ink); width:30px; height:30px; border-radius:50%; font-size:16px; line-height:1; cursor:pointer; }
+
+  .edit-toggle-row{
+    display:flex; align-items:center; justify-content:space-between; background:rgba(217,154,43,.08);
+    border:1px solid var(--accent-dim); border-radius:8px; padding:10px 12px; margin-bottom:14px;
+  }
+  .edit-toggle-row .t{ font-size:13px; font-weight:700; color:var(--ink); }
+  .edit-toggle-row .d{ font-size:11px; color:var(--ink-dim); margin-top:2px; }
+  .switch{ position:relative; width:46px; height:26px; flex-shrink:0; margin-inline-start:12px; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .switch .track{ position:absolute; inset:0; background:#3a4030; border-radius:20px; transition:.2s; }
+  .switch .track:before{ content:''; position:absolute; width:20px; height:20px; left:3px; top:3px; background:#cfd0c2; border-radius:50%; transition:.2s; }
+  .switch input:checked + .track{ background:var(--accent-dim); }
+  .switch input:checked + .track:before{ transform:translateX(20px); background:var(--accent); }
+
+  .ctrl-card{ border:1px solid var(--panel-border); border-radius:9px; padding:10px 12px; margin-bottom:10px; }
+  .ctrl-card .name{ font-size:13px; font-weight:700; color:var(--ink); margin-bottom:8px; }
+  .slider-row{ display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .slider-row label{ font-size:11px; color:var(--ink-dim); width:64px; flex-shrink:0; }
+  .slider-row input[type=range]{ flex:1; accent-color:var(--accent); height:22px; }
+  .slider-row .valnum{ width:38px; text-align:left; direction:ltr; font-family:var(--hud-font); font-size:12px; color:var(--ink-dim); }
+
+  #resetBtn{
+    width:100%; margin-top:6px; padding:11px; border-radius:8px; border:1px solid var(--panel-border);
+    background:rgba(192,67,47,.12); color:#e69688; font-family:var(--ar-font); font-weight:700; font-size:13px;
+  }
+  .settings-note{ font-size:10.5px; color:var(--ink-dim); text-align:center; margin-top:10px; line-height:1.6; }
+
+  /* ===== toast ===== */
+  #toast{
+    position:fixed; top:70px; left:50%; transform:translateX(-50%) translateY(-8px); z-index:70;
+    background:var(--panel-bg); border:1px solid var(--accent-dim); color:var(--accent);
+    padding:8px 16px; border-radius:6px; font-size:12.5px; opacity:0; transition:.25s ease; pointer-events:none;
+  }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+  .health-track{ width:70px; height:9px; background:#241d16; border:1px solid var(--panel-border); border-radius:3px; overflow:hidden; }
+  .health-fill{ height:100%; width:100%; background:linear-gradient(90deg,#7fae4a,#a8d162); transition:width .25s ease, background .25s ease; }
+  .health-fill.mid{ background:linear-gradient(90deg,#d99a2b,#e8c04a); }
+  .health-fill.low{ background:linear-gradient(90deg,#c0432f,#e8654a); }
+
+  #dmgFlash{
+    position:fixed; inset:0; z-index:45; background:radial-gradient(ellipse at center, rgba(192,67,47,0) 40%, rgba(192,67,47,.45) 100%);
+    opacity:0; pointer-events:none; transition:opacity .15s ease;
+  }
+  #dmgFlash.show{ opacity:1; }
+
+  #gameOverOverlay{
+    position:fixed; inset:0; z-index:150; background:rgba(4,5,3,.78);
+    display:flex; align-items:center; justify-content:center;
+    opacity:0; pointer-events:none; transition:opacity .4s ease;
+  }
+  #gameOverOverlay.show{ opacity:1; pointer-events:auto; }
+  #gameOverPanel{ text-align:center; background:var(--panel-bg); border:1px solid var(--danger); border-radius:12px; padding:28px 34px; }
+  .go-title{ font-size:22px; font-weight:800; color:var(--danger); margin-bottom:10px; }
+  .go-score{ font-size:14px; color:var(--ink); margin-bottom:18px; }
+  .go-score span{ font-family:var(--hud-font); color:var(--accent); font-weight:700; }
+  #restartBtn{ padding:12px 26px; border-radius:8px; border:1px solid var(--accent-dim); background:rgba(217,154,43,.15); color:var(--accent); font-family:var(--ar-font); font-weight:700; font-size:14px; }
+
+  /* rotate hint */
+  #rotateHint{
+    position:fixed; bottom:8px; right:8px; z-index:36; font-size:10px; color:var(--ink-dim);
+    background:rgba(0,0,0,.35); padding:4px 8px; border-radius:4px; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+
+  <div id="crosshair">
+    <svg viewBox="0 0 150 150">
+      <circle class="stroke" cx="75" cy="75" r="46"/>
+      <circle class="stroke" cx="75" cy="75" r="4" fill="none"/>
+      <line class="stroke" x1="75" y1="4" x2="75" y2="30"/>
+      <line class="stroke" x1="75" y1="120" x2="75" y2="146"/>
+      <line class="stroke" x1="4" y1="75" x2="30" y2="75"/>
+      <line class="stroke" x1="120" y1="75" x2="146" y2="75"/>
+      <circle class="dot" cx="75" cy="75" r="2.2"/>
+    </svg>
+  </div>
+
+  <div id="hudTop">
+    <div class="hud-chip"><span class="lbl">النقاط</span><span class="val amber" id="scoreVal">0</span></div>
+    <div class="hud-chip"><span class="lbl">القذائف</span><span class="val" id="ammoVal">∞</span></div>
+    <div class="hud-chip" id="healthChip">
+      <span class="lbl">الصحة</span>
+      <div class="health-track"><div class="health-fill" id="healthFill"></div></div>
+    </div>
+    <div class="hud-chip"><span class="lbl">الأعداء</span><span class="val" id="enemyVal">0</span></div>
+  </div>
+
+  <div id="dmgFlash"></div>
+
+  <div id="gameOverOverlay">
+    <div id="gameOverPanel">
+      <div class="go-title">تم تدمير دبابتك</div>
+      <div class="go-score">النقاط النهائية: <span id="finalScore">0</span></div>
+      <button id="restartBtn">إعادة المحاولة</button>
+    </div>
+  </div>
+
+  <div id="speedo"><span class="n" id="speedVal">0</span> <span class="u">كم/س</span></div>
+
+  <div id="rotateHint">وضع اللعب الافقي يعطي رؤية أفضل</div>
+
+  <!-- Controls -->
+  <div id="joyBase" class="ctrl">
+    <div id="joyStick"></div>
+  </div>
+
+  <button id="fireBtn" class="ctrl btn-round">
+    <div class="ring"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="36"/></svg></div>
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/></svg>
+    <span>إطلاق</span>
+  </button>
+
+  <button id="aimBtn" class="ctrl btn-round">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><line x1="12" y1="1" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="23"/><line x1="1" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="23" y2="12"/></svg>
+    <span>تصويب</span>
+  </button>
+
+  <button id="zoomBtn" class="ctrl btn-round">
+    <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="15.2" y1="15.2" x2="21" y2="21"/><line x1="7.5" y1="10.5" x2="13.5" y2="10.5"/><line x1="10.5" y1="7.5" x2="10.5" y2="13.5"/></svg>
+    <span>تقريب</span>
+  </button>
+
+  <button id="swapBtn" title="تبديل بين الدبابة والجندي">
+    <svg viewBox="0 0 24 24"><path d="M4 7h13M17 7l-3-3M17 7l-3 3M20 17H7M7 17l3 3M7 17l3-3"/></svg>
+  </button>
+  <div id="modeLabel">🚗 الدبابة</div>
+
+  <button id="gearBtn">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.97 7.97 0 000-2l2.1-1.6-2-3.5-2.5 1a8 8 0 00-1.7-1L14.9 3h-4l-.4 2.9a8 8 0 00-1.7 1l-2.5-1-2 3.5L6.4 11a7.97 7.97 0 000 2l-2.1 1.6 2 3.5 2.5-1a8 8 0 001.7 1l.4 2.9h4l.4-2.9a8 8 0 001.7-1l2.5 1 2-3.5L19.4 13z"/></svg>
+  </button>
+
+  <div id="toast"></div>
+
+  <!-- Settings -->
+  <div id="settingsOverlay">
+    <div id="settingsPanel">
+      <div class="settings-head">
+        <h2>إعدادات أزرار التحكم</h2>
+        <button id="closeSettings">✕</button>
+      </div>
+
+      <div class="edit-toggle-row">
+        <div>
+          <div class="t">وضع تحريك الأزرار</div>
+          <div class="d">فعّله ثم اسحب أي زر لأي مكان تريده على الشاشة</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="editModeToggle"><span class="track"></span></label>
+      </div>
+
+      <div class="ctrl-card">
+        <div class="name">عصا التحكم</div>
+        <div class="slider-row"><label>الحجم</label><input type="range" id="s_joy_size" min="0.6" max="1.8" step="0.05"><span class="valnum" id="v_joy_size"></span></div>
+        <div class="slider-row"><label>الشفافية</label><input type="range" id="s_joy_op" min="0.25" max="1" step="0.05"><span class="valnum" id="v_joy_op"></span></div>
+      </div>
+
+      <div class="ctrl-card">
+        <div class="name">زر الإطلاق</div>
+        <div class="slider-row"><label>الحجم</label><input type="range" id="s_fire_size" min="0.6" max="1.8" step="0.05"><span class="valnum" id="v_fire_size"></span></div>
+        <div class="slider-row"><label>الشفافية</label><input type="range" id="s_fire_op" min="0.25" max="1" step="0.05"><span class="valnum" id="v_fire_op"></span></div>
+      </div>
+
+      <div class="ctrl-card">
+        <div class="name">زر التصويب</div>
+        <div class="slider-row"><label>الحجم</label><input type="range" id="s_aim_size" min="0.6" max="1.8" step="0.05"><span class="valnum" id="v_aim_size"></span></div>
+        <div class="slider-row"><label>الشفافية</label><input type="range" id="s_aim_op" min="0.25" max="1" step="0.05"><span class="valnum" id="v_aim_op"></span></div>
+      </div>
+
+      <div class="ctrl-card">
+        <div class="name">زر التقريب</div>
+        <div class="slider-row"><label>الحجم</label><input type="range" id="s_zoom_size" min="0.6" max="1.8" step="0.05"><span class="valnum" id="v_zoom_size"></span></div>
+        <div class="slider-row"><label>الشفافية</label><input type="range" id="s_zoom_op" min="0.25" max="1" step="0.05"><span class="valnum" id="v_zoom_op"></span></div>
+      </div>
+
+      <button id="resetBtn">إعادة ضبط جميع الأزرار</button>
+      <div class="settings-note">ملاحظة: الإعدادات مؤقتة لهذه الجلسة فقط ولا يتم حفظها بعد إغلاق الصفحة.</div>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="tank-blip"><svg viewBox="0 0 24 24"><path d="M4 15h1v-3a2 2 0 012-2h3V8h4v2h3a2 2 0 012 2v3h1v3H4v-3zM10 6h4v2h-4z"/></svg></div>
+    <div class="load-title">جاري تجهيز ساحة المعركة</div>
+    <div class="load-bar-track"><div class="load-bar-fill" id="loadFill"></div></div>
+    <div class="load-pct" id="loadPct">0%</div>
+    <div class="load-sub" id="loadSub">تحميل النماذج ثلاثية الأبعاد…</div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
